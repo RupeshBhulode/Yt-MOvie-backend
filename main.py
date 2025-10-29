@@ -1,8 +1,8 @@
 # main.py
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from firebase_admin import firestore  # ✅ Add this line
+from pydantic import BaseModel
+from firebase_admin import firestore  # for SERVER_TIMESTAMP
 from utils import db, CATEGORIES
 
 app = FastAPI(
@@ -11,7 +11,7 @@ app = FastAPI(
     description="Fetch movies by category with pagination (5 per page)"
 )
 
-# ✅ Allow CORS for frontend access
+# ✅ CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,6 +26,53 @@ app.add_middleware(
 @app.get("/")
 def home():
     return {"message": "🔥 Movie API is live and running!"}
+
+
+# -------------------------------------------
+# 👤 Simple User Endpoints
+# -------------------------------------------
+class NewUser(BaseModel):
+    name: str
+
+@app.get("/users")
+def list_users():
+    """Return all users from Firestore collection: users/{user_id}."""
+    docs = db.collection("users").stream()
+    return {
+        "users": [
+            {"id": d.id, "name": (d.to_dict() or {}).get("name", d.id)}
+            for d in docs
+        ]
+    }
+
+@app.get("/users/{user_id}")
+def get_user(user_id: str):
+    """Return one user by ID."""
+    doc = db.collection("users").document(user_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    data = doc.to_dict() or {}
+    return {"id": doc.id, "name": data.get("name", doc.id)}
+
+@app.post("/users", status_code=201)
+def create_user(payload: NewUser):
+    """
+    Create a user at users/{name}. If it already exists, just return it.
+    Frontend can store the returned 'id' in localStorage as user_id.
+    """
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    ref = db.collection("users").document(name)
+    doc = ref.get()
+    if not doc.exists:
+        ref.set({"name": name})  # minimal profile
+
+    # read once (works both for new and existing)
+    doc = ref.get()
+    data = doc.to_dict() or {}
+    return {"id": doc.id, "name": data.get("name", doc.id)}
 
 
 # -------------------------------------------
@@ -50,36 +97,30 @@ def fetch_movies(category: str, page: int):
 # -------------------------------------------
 # 🧩 CATEGORY ROUTES (each category separate)
 # -------------------------------------------
-
 @app.get("/movies/hindi-action")
 def hindi_action(page: int = Query(1, ge=1)):
     """Fetch Hindi Action movies (5 per page)"""
     return fetch_movies("Hindi Action", page)
-
 
 @app.get("/movies/hindi-comedy")
 def hindi_comedy(page: int = Query(1, ge=1)):
     """Fetch Hindi Comedy movies (5 per page)"""
     return fetch_movies("Hindi Comedy", page)
 
-
 @app.get("/movies/hindi-family")
 def hindi_family(page: int = Query(1, ge=1)):
     """Fetch Hindi Family movies (5 per page)"""
     return fetch_movies("Hindi Family", page)
-
 
 @app.get("/movies/hindi-horror")
 def hindi_horror(page: int = Query(1, ge=1)):
     """Fetch Hindi Horror movies (5 per page)"""
     return fetch_movies("Hindi Horror", page)
 
-
 @app.get("/movies/hindi-suspense-thriller")
 def hindi_thriller(page: int = Query(1, ge=1)):
     """Fetch Hindi Suspense Thriller movies (5 per page)"""
     return fetch_movies("Hindi Suspense Thriller", page)
-
 
 @app.get("/movies/hindi-animated")
 def hindi_animated(page: int = Query(1, ge=1)):
@@ -118,17 +159,17 @@ def get_movie(
                     "videoId": video_id,
                     "title": data.get("title"),
                     "category": category,
-                    "thumbnail": data.get("thumbnail", ""),  # ✅ added thumbnail
+                    "thumbnail": data.get("thumbnail", ""),
                     "timestamp": firestore.SERVER_TIMESTAMP
                 })
 
             # ✅ Store watched movie
             if watched:
                 user_ref.collection("watchedMovies").document(video_id).set({
-                     "videoId": video_id,
+                    "videoId": video_id,
                     "title": data.get("title"),
                     "category": category,
-                    "thumbnail": data.get("thumbnail", ""),  # ✅ added thumbnail
+                    "thumbnail": data.get("thumbnail", ""),
                     "timestamp": firestore.SERVER_TIMESTAMP
                 })
 
@@ -138,51 +179,37 @@ def get_movie(
                 "message": f"Movie fetched for user '{user_id}' (liked/watched saved if true)"
             }
 
-    return {"error": f"No movie found with videoId: {video_id}"}   
+    return {"error": f"No movie found with videoId: {video_id}"}
 
 
-
-
-
+# -------------------------------------------
+# ❤️ FETCH LIKED MOVIES OF A USER
+# -------------------------------------------
 @app.get("/user/{user_id}/liked")
 def get_liked_movies(user_id: str):
-    """
-    Fetch all liked movies for a specific user.
-    Data is retrieved from Firestore under: user_data/{user_id}/likedMovies
-    """
+    """Fetch all liked movies for a specific user from user_data/{user_id}/likedMovies."""
     liked_ref = db.collection("user_data").document(user_id).collection("likedMovies").stream()
     liked_movies = [doc.to_dict() for doc in liked_ref]
 
     if not liked_movies:
         return {"user": user_id, "liked_movies": [], "message": "No liked movies found."}
 
-    return {
-        "user": user_id,
-        "count": len(liked_movies),
-        "liked_movies": liked_movies
-    }
+    return {"user": user_id, "count": len(liked_movies), "liked_movies": liked_movies}
 
 
 # -------------------------------------------
-# 🎞️ FETCH WATCHED MOVIES OF A USER
+# 👁️ FETCH WATCHED MOVIES OF A USER
 # -------------------------------------------
 @app.get("/user/{user_id}/watched")
 def get_watched_movies(user_id: str):
-    """
-    Fetch all watched movies for a specific user.
-    Data is retrieved from Firestore under: user_data/{user_id}/watchedMovies
-    """
+    """Fetch all watched movies for a specific user from user_data/{user_id}/watchedMovies."""
     watched_ref = db.collection("user_data").document(user_id).collection("watchedMovies").stream()
     watched_movies = [doc.to_dict() for doc in watched_ref]
 
     if not watched_movies:
         return {"user": user_id, "watched_movies": [], "message": "No watched movies found."}
 
-    return {
-        "user": user_id,
-        "count": len(watched_movies),
-        "watched_movies": watched_movies
-    }
+    return {"user": user_id, "count": len(watched_movies), "watched_movies": watched_movies}
 
 
 # -------------------------------------------
@@ -194,16 +221,12 @@ def get_recommended_movies(user_id: str):
     Recommend up to 8 movies based on the user's liked and watched history.
     Distributes recommendations proportionally to the category scores.
     """
-    import math, random
+    import random
 
     user_ref = db.collection("user_data").document(user_id)
 
-    # Fetch liked and watched movies
-    liked_ref = user_ref.collection("likedMovies").stream()
-    watched_ref = user_ref.collection("watchedMovies").stream()
-
-    liked = [doc.to_dict() for doc in liked_ref]
-    watched = [doc.to_dict() for doc in watched_ref]
+    liked = [doc.to_dict() for doc in user_ref.collection("likedMovies").stream()]
+    watched = [doc.to_dict() for doc in user_ref.collection("watchedMovies").stream()]
 
     if not liked and not watched:
         return {"user": user_id, "recommendations": [], "message": "No history found to generate recommendations."}
@@ -215,12 +238,10 @@ def get_recommended_movies(user_id: str):
     for m in liked:
         category_score[m["category"]] = category_score.get(m["category"], 0) + 2
 
-    # Sort categories by descending score
+    # Sort, keep top 3
     sorted_categories = sorted(category_score.items(), key=lambda x: x[1], reverse=True)
-
-    # Keep only top 3 categories
     top_categories = sorted_categories[:3]
-    total_score = sum(score for _, score in top_categories)
+    total_score = sum(score for _, score in top_categories) or 1
 
     # Exclude already seen movie IDs
     seen_ids = {m["videoId"] for m in liked + watched}
@@ -228,26 +249,23 @@ def get_recommended_movies(user_id: str):
     total_recommendations = 8
     recommendations = []
 
-    # 🎯 Proportional allocation
+    # Proportional allocation
     allocations = {}
     remaining = total_recommendations
-
     for i, (cat, score) in enumerate(top_categories):
         if i == len(top_categories) - 1:
-            # Assign remaining to last category to make total = 8
             allocations[cat] = remaining
         else:
             alloc = round((score / total_score) * total_recommendations)
             allocations[cat] = alloc
             remaining -= alloc
 
-    # 🧩 Fetch movies proportionally from each category
+    # Fetch movies per category
     for cat, limit in allocations.items():
         if limit <= 0:
             continue
         docs = list(db.collection(cat).stream())
-        random.shuffle(docs)  # randomize within the category
-
+        random.shuffle(docs)
         count = 0
         for d in docs:
             movie = d.to_dict()
@@ -257,7 +275,6 @@ def get_recommended_movies(user_id: str):
             if count >= limit:
                 break
 
-    # Shuffle final list for variety
     random.shuffle(recommendations)
 
     return {
