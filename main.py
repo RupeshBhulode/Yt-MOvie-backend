@@ -33,17 +33,21 @@ def home():
 # -------------------------------------------
 class NewUser(BaseModel):
     name: str
+    avatar: Optional[str] = None
 
 @app.get("/users")
 def list_users():
     """Return all users from Firestore collection: users/{user_id}."""
     docs = db.collection("users").stream()
-    return {
-        "users": [
-            {"id": d.id, "name": (d.to_dict() or {}).get("name", d.id)}
-            for d in docs
-        ]
-    }
+    users = []
+    for d in docs:
+        data = d.to_dict() or {}
+        users.append({
+            "id": d.id,
+            "name": data.get("name", d.id),
+            "avatar": data.get("avatar", None)
+        })
+    return {"users": users}
 
 @app.get("/users/{user_id}")
 def get_user(user_id: str):
@@ -52,7 +56,11 @@ def get_user(user_id: str):
     if not doc.exists:
         raise HTTPException(status_code=404, detail="User not found")
     data = doc.to_dict() or {}
-    return {"id": doc.id, "name": data.get("name", doc.id)}
+    return {
+        "id": doc.id,
+        "name": data.get("name", doc.id),
+        "avatar": data.get("avatar", None)
+    }
 
 @app.post("/users", status_code=201)
 def create_user(payload: NewUser):
@@ -67,12 +75,13 @@ def create_user(payload: NewUser):
     ref = db.collection("users").document(name)
     doc = ref.get()
     if not doc.exists:
-        ref.set({"name": name})  # minimal profile
-
-    # read once (works both for new and existing)
+        ref.set({
+            "name": name,
+            "avatar": payload.avatar or "https://api.dicebear.com/9.x/pixel-art/svg?seed=" + name
+        })
     doc = ref.get()
     data = doc.to_dict() or {}
-    return {"id": doc.id, "name": data.get("name", doc.id)}
+    return {"id": doc.id, "name": data.get("name", doc.id), "avatar": data.get("avatar")}
 
 
 # -------------------------------------------
