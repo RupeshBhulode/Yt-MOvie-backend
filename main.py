@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from firebase_admin import firestore  # for SERVER_TIMESTAMP
 from utils import db, CATEGORIES
+from typing import Optional
+
 
 app = FastAPI(
     title="🎬 Movie API with Pagination",
